@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-MicroWorkers BOT - FINAL WORKING VERSION
-Owner ID: 7977315501
+MicroWorkers BOT - PROPER WORKING VERSION
+Owner: 7977315501
+Render URL: https://tg-bot-hmpa.onrender.com
 """
 
 import os
@@ -29,13 +30,18 @@ TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
 API_SECRET_KEY = 'f0737b7d3a2c4de47564a47ee55a59ea4f16947831848c86efafa0be926d003f'
 VCODE_SECRET_KEY = '121b0fb13a9745890bf300f622e104ce39f5bc42ea8ec8915fd2bda02618d440'
 API_BASE_URL = 'https://ttv.microworkers.com'
-CHECK_INTERVAL = 60
+CHECK_INTERVAL = 45
 PORT = int(os.environ.get('PORT', 10000))
+RENDER_URL = 'https://tg-bot-hmpa.onrender.com'
 DATA_FILE = 'users.json'
 
 # ==================== LOGGING ====================
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(message)s', datefmt='%H:%M:%S')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 # ==================== DATA MANAGER ====================
@@ -53,15 +59,15 @@ class DataManager:
                     self.users = set(data.get('users', []))
                     self.users.add(OWNER_ID)
                 logger.info(f"📂 Loaded {len(self.users)} users")
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Load error: {e}")
             
     def save(self):
         try:
             with open(DATA_FILE, 'w') as f:
                 json.dump({'users': list(self.users)}, f)
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Save error: {e}")
             
     def is_owner(self, user_id: int) -> bool:
         return user_id == OWNER_ID
@@ -108,33 +114,51 @@ class MicroWorkersAPI:
         payload = f"{timestamp}{method}{path}"
         vcode = hmac.new(self.vcode_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
         auth = hmac.new(self.api_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        return {'X-API-Key': self.api_key, 'X-VCode': vcode, 'X-Auth': auth, 'X-Timestamp': timestamp}
+        return {
+            'X-API-Key': self.api_key,
+            'X-VCode': vcode,
+            'X-Auth': auth,
+            'X-Timestamp': timestamp
+        }
         
     async def get_jobs(self):
         try:
             session = await self.get_session()
-            ts = str(int(time.time() * 1000))
-            headers = self._sign(ts, 'GET', '/api/v2/jobs?type=all&limit=100')
+            timestamp = str(int(time.time() * 1000))
+            path = '/api/v2/jobs?type=all&limit=100'
+            headers = self._sign(timestamp, 'GET', path)
             headers['Content-Type'] = 'application/json'
             
-            async with session.get(f"{self.base_url}/api/v2/jobs?type=all&limit=100", headers=headers) as resp:
+            async with session.get(f"{self.base_url}{path}", headers=headers) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get('jobs') if isinstance(data, dict) else data
-        except:
+                    jobs = data.get('jobs') if isinstance(data, dict) else data
+                    if jobs:
+                        logger.info(f"📊 Got {len(jobs)} jobs from API")
+                    return jobs
+                else:
+                    logger.warning(f"API status: {resp.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"API error: {e}")
             return None
-        return None
-        
+            
     def find_job(self, jobs):
         if not jobs:
             return None
+            
         keywords = ['email', 'submit', 'click', 'reply', 'screenshot']
+        
         for job in jobs:
             try:
                 title = str(job.get('title', job.get('name', ''))).lower()
+                
                 if all(k in title for k in keywords):
                     completed = int(job.get('completed_count', job.get('completed', 0)))
                     total = int(job.get('total_jobs', job.get('total', 100)))
+                    
+                    logger.info(f"🎯 Found target job: {completed}/{total}")
+                    
                     return {
                         'payment': '0.10',
                         'completed': completed,
@@ -144,6 +168,7 @@ class MicroWorkersAPI:
                     }
             except:
                 continue
+                
         return None
 
 # ==================== BOT ====================
@@ -161,6 +186,7 @@ class MicroWorkersBot:
     # ========== NOTIFICATION ==========
     
     def format_message(self, job):
+        """Format message exactly like screenshot"""
         return f"""Reply + Screenshot (Read Updated...)
 
 ${job['payment']} {job['completed']}/{job['total']} {job['remaining']} left
@@ -187,19 +213,31 @@ ${job['payment']} {job['completed']}/{job['total']} {job['remaining']} left
 Open Job    {job['time']}"""
         
     async def send_to_all(self, message, keyboard=None):
+        """Send message to all authorized users"""
         bot = Bot(token=self.token)
         sent = 0
+        
         for uid in self.data.get_users():
             try:
-                await bot.send_message(chat_id=uid, text=message, reply_markup=keyboard, parse_mode='Markdown')
+                await bot.send_message(
+                    chat_id=uid,
+                    text=message,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
                 sent += 1
-            except:
-                pass
+                await asyncio.sleep(0.05)  # Small delay to avoid rate limits
+            except Exception as e:
+                logger.error(f"Failed to send to {uid}: {e}")
+                
         return sent
         
     async def send_notification(self, job):
-        key = f"{job['completed']}_{job['total']}"
-        if key in self.cache:
+        """Send job notification"""
+        cache_key = f"{job['completed']}_{job['total']}"
+        
+        if cache_key in self.cache:
+            logger.debug("Duplicate notification skipped")
             return
             
         keyboard = InlineKeyboardMarkup([[
@@ -207,26 +245,37 @@ Open Job    {job['time']}"""
         ]])
         
         sent = await self.send_to_all(self.format_message(job), keyboard)
-        self.cache.add(key)
-        self.stats['notifications'] += 1
-        logger.info(f"✅ Notification sent to {sent} users")
         
+        self.cache.add(cache_key)
+        self.stats['notifications'] += 1
+        
+        logger.info(f"✅ Notification sent to {sent} users | {job['completed']}/{job['total']}")
+        
+        # Clear old cache
         if len(self.cache) > 100:
             self.cache.clear()
             
     # ========== MONITORING ==========
     
     async def monitor(self):
+        """Monitor jobs"""
         logger.info("🔍 Monitoring started...")
+        
         while self.running:
             try:
                 self.stats['checks'] += 1
+                
                 jobs = await self.api.get_jobs()
+                
                 if jobs:
                     job = self.api.find_job(jobs)
                     if job:
                         await self.send_notification(job)
+                else:
+                    logger.debug("No jobs received")
+                    
                 await asyncio.sleep(CHECK_INTERVAL)
+                
             except Exception as e:
                 logger.error(f"Monitor error: {e}")
                 await asyncio.sleep(60)
@@ -234,47 +283,63 @@ Open Job    {job['time']}"""
     # ========== COMMANDS ==========
     
     async def start(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_user(uid):
+        """Start command"""
+        user_id = update.effective_user.id
+        
+        if not self.data.is_user(user_id):
             await update.message.reply_text("❌ You are not authorized to use this bot.")
             return
             
-        msg = "🚀 *MicroWorkers Bot*\n\n"
-        msg += f"📌 Monitoring: `Email Submit Job`\n"
-        msg += f"⏱ Interval: `{CHECK_INTERVAL}s`\n\n"
-        
-        if self.data.is_owner(uid):
-            msg += "👑 *Owner Commands*\n"
-            msg += "`/users` - List users\n"
-            msg += "`/add [id]` - Add user\n"
-            msg += "`/remove [id]` - Remove user\n"
-            msg += "`/broadcast [msg]` - Broadcast\n\n"
+        msg = f"""🚀 *MicroWorkers Bot*
+
+📌 *Monitoring:* `Email Submit + Click + Reply + Screenshot`
+⏱ *Interval:* `{CHECK_INTERVAL}s`
+🌐 *Web:* [{RENDER_URL}]({RENDER_URL})
+
+"""
+        if self.data.is_owner(user_id):
+            msg += """👑 *Owner Commands*
+`/users` - List users
+`/add [id]` - Add user
+`/remove [id]` - Remove user
+`/broadcast [msg]` - Broadcast
+
+"""
             
-        msg += "📱 *Commands*\n"
-        msg += "`/status` - Bot status\n"
-        msg += "`/test` - Test notification\n"
-        msg += "`/help` - Help"
+        msg += """📱 *User Commands*
+`/status` - Bot status
+`/test` - Test notification
+`/help` - Help"""
         
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        await update.message.reply_text(msg, parse_mode='Markdown', disable_web_page_preview=True)
         
     async def status(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_user(uid):
+        """Status command"""
+        user_id = update.effective_user.id
+        if not self.data.is_user(user_id):
             return
             
         uptime = datetime.now() - self.start_time
-        msg = f"📊 *Status*\n\n"
-        msg += f"```\n"
-        msg += f"Uptime: {str(uptime).split('.')[0]}\n"
-        msg += f"Checks: {self.stats['checks']}\n"
-        msg += f"Notifications: {self.stats['notifications']}\n"
-        msg += f"Users: {len(self.data.get_users())}\n"
-        msg += f"```"
+        hours = uptime.total_seconds() / 3600
+        
+        msg = f"""📊 *Bot Status*
+
+```
+
+Uptime: {str(uptime).split('.')[0]}
+Checks: {self.stats['checks']}
+Notifications: {self.stats['notifications']}
+Users: {len(self.data.get_users())}
+Checks/hr: {(self.stats['checks']/max(1, hours)):.1f}
+
+```"""
+        
         await update.message.reply_text(msg, parse_mode='Markdown')
         
     async def test(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_user(uid):
+        """Test command"""
+        user_id = update.effective_user.id
+        if not self.data.is_user(user_id):
             return
             
         test_job = {
@@ -284,91 +349,109 @@ Open Job    {job['time']}"""
             'remaining': 287,
             'time': datetime.now().strftime('%d %H:%M')
         }
+        
         await self.send_notification(test_job)
         await update.message.reply_text("✅ Test notification sent!")
         
     async def help(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_user(uid):
+        """Help command"""
+        user_id = update.effective_user.id
+        if not self.data.is_user(user_id):
             return
             
-        await update.message.reply_text(
-            "📚 *Help*\n\n"
-            "This bot monitors MicroWorkers for:\n"
-            "`Email Submit + Click + Reply + Screenshot`\n\n"
-            "Commands:\n"
-            "/start - Welcome\n"
-            "/status - Status\n"
-            "/test - Test\n"
-            "/help - Help",
-            parse_mode='Markdown'
-        )
+        msg = f"""📚 *Help*
+
+This bot monitors MicroWorkers for:
+`Email Submit + Click + Reply + Screenshot`
+
+*Commands:*
+/start - Welcome message
+/status - Bot status
+/test - Test notification
+/help - This help
+
+*Web Interface:*
+[{RENDER_URL}]({RENDER_URL})"""
+        
+        await update.message.reply_text(msg, parse_mode='Markdown', disable_web_page_preview=True)
         
     # ========== OWNER COMMANDS ==========
     
     async def users(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_owner(uid):
+        """List users - Owner only"""
+        user_id = update.effective_user.id
+        if not self.data.is_owner(user_id):
             return
             
-        msg = "👥 *Users*\n\n"
-        for u in self.data.get_users():
-            if u == OWNER_ID:
-                msg += f"👑 `{u}` (Owner)\n"
+        msg = "👥 *Authorized Users*\n\n"
+        
+        for uid in self.data.get_users():
+            if uid == OWNER_ID:
+                msg += f"👑 `{uid}` (Owner)\n"
             else:
-                msg += f"👤 `{u}`\n"
+                msg += f"👤 `{uid}`\n"
+                
         msg += f"\nTotal: {len(self.data.get_users())}"
+        
         await update.message.reply_text(msg, parse_mode='Markdown')
         
     async def add(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_owner(uid):
+        """Add user - Owner only"""
+        user_id = update.effective_user.id
+        if not self.data.is_owner(user_id):
             return
             
         try:
             new_id = int(context.args[0])
             if self.data.add_user(new_id):
-                await update.message.reply_text(f"✅ Added `{new_id}`")
+                await update.message.reply_text(f"✅ Added user `{new_id}`")
             else:
-                await update.message.reply_text(f"⚠️ Already exists")
-        except:
+                await update.message.reply_text(f"⚠️ User `{new_id}` already exists")
+        except (IndexError, ValueError):
             await update.message.reply_text("❌ Usage: /add [user_id]")
             
     async def remove(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_owner(uid):
+        """Remove user - Owner only"""
+        user_id = update.effective_user.id
+        if not self.data.is_owner(user_id):
             return
             
         try:
             rem_id = int(context.args[0])
             if self.data.remove_user(rem_id):
-                await update.message.reply_text(f"✅ Removed `{rem_id}`")
+                await update.message.reply_text(f"✅ Removed user `{rem_id}`")
             else:
-                await update.message.reply_text(f"⚠️ Cannot remove owner or not found")
-        except:
+                await update.message.reply_text(f"⚠️ Cannot remove owner or user not found")
+        except (IndexError, ValueError):
             await update.message.reply_text("❌ Usage: /remove [user_id]")
             
     async def broadcast(self, update, context):
-        uid = update.effective_user.id
-        if not self.data.is_owner(uid):
+        """Broadcast message - Owner only"""
+        user_id = update.effective_user.id
+        if not self.data.is_owner(user_id):
             return
             
         if not context.args:
             await update.message.reply_text("❌ Usage: /broadcast [message]")
             return
             
-        msg = " ".join(context.args)
-        sent = await self.send_to_all(f"📢 *Broadcast*\n\n{msg}", None)
-        await update.message.reply_text(f"✅ Sent to {sent} users")
+        message = " ".join(context.args)
+        broadcast_msg = f"📢 *Broadcast from Owner*\n\n{message}"
+        
+        sent = await self.send_to_all(broadcast_msg, None)
+        
+        await update.message.reply_text(f"✅ Broadcast sent to {sent} users")
         
     # ========== RUN ==========
     
     async def run(self):
+        """Run the bot"""
         print("\n" + "="*50)
         print("🚀 MICROWORKERS BOT STARTING...")
         print("="*50)
         print(f"👑 Owner: {OWNER_ID}")
         print(f"📊 Users: {len(self.data.get_users())}")
+        print(f"🌐 URL: {RENDER_URL}")
         print("="*50 + "\n")
         
         # Send startup to owner
@@ -376,13 +459,20 @@ Open Job    {job['time']}"""
             bot = Bot(token=self.token)
             await bot.send_message(
                 chat_id=OWNER_ID,
-                text="✅ *Bot Started!*\n\n"
-                     f"👑 Owner: `{OWNER_ID}`\n"
-                     f"📊 Users: `{len(self.data.get_users())}`",
-                parse_mode='Markdown'
+                text=f"""✅ *Bot Started Successfully!*
+
+👑 *Owner:* `{OWNER_ID}`
+📊 *Users:* `{len(self.data.get_users())}`
+⏱ *Interval:* `{CHECK_INTERVAL}s`
+🌐 *Web:* [{RENDER_URL}]({RENDER_URL})
+
+📌 Monitoring: `Email Submit + Click + Reply + Screenshot`""",
+                parse_mode='Markdown',
+                disable_web_page_preview=True
             )
-        except:
-            pass
+            logger.info("✅ Startup message sent to owner")
+        except Exception as e:
+            logger.error(f"Failed to send startup: {e}")
             
         # Create application
         app = Application.builder().token(self.token).build()
@@ -400,36 +490,140 @@ Open Job    {job['time']}"""
         # Start monitoring
         asyncio.create_task(self.monitor())
         
-        # Start bot - FIXED: using run_polling directly
+        # Start bot
         logger.info("✅ Bot is running!")
-        await app.run_polling()
+        await app.run_polling(drop_pending_updates=True)
 
 # ==================== WEB SERVER ====================
 
 async def web_server():
+    """Web server for Render health checks and status"""
     app = web.Application()
     
     async def home(request):
-        return web.Response(
-            text=f"""
-            <html>
-                <head><title>MicroWorkers Bot</title></head>
-                <body style="font-family: Arial; padding: 40px; background: #f0f2f5;">
-                    <div style="max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                        <h1 style="color: #1a73e8;">🚀 MicroWorkers Bot</h1>
-                        <p style="font-size: 18px;">Status: <span style="color: green; font-weight: bold;">✅ ONLINE</span></p>
-                        <p>👑 Owner ID: <code>{OWNER_ID}</code></p>
-                        <p>📊 <a href="/health">Health Check</a></p>
-                    </div>
-                </body>
-            </html>
-            """,
-            content_type='text/html'
-        )
+        """Home page with Render URL"""
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>MicroWorkers Bot</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    margin: 0;
+                    padding: 20px;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    color: white;
+                }}
+                .card {{
+                    background: rgba(255, 255, 255, 0.1);
+                    backdrop-filter: blur(10px);
+                    border-radius: 20px;
+                    padding: 40px;
+                    max-width: 600px;
+                    width: 100%;
+                    box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+                    border: 1px solid rgba(255,255,255,0.2);
+                }}
+                h1 {{ margin: 0 0 10px; font-size: 2.5em; }}
+                .status {{
+                    display: inline-block;
+                    background: #10b981;
+                    padding: 8px 20px;
+                    border-radius: 50px;
+                    font-weight: bold;
+                    margin: 20px 0;
+                }}
+                .info {{
+                    background: rgba(0,0,0,0.2);
+                    padding: 20px;
+                    border-radius: 10px;
+                    margin: 20px 0;
+                }}
+                .info p { margin: 10px 0; }
+                code {{
+                    background: rgba(0,0,0,0.3);
+                    padding: 3px 8px;
+                    border-radius: 5px;
+                    font-size: 0.9em;
+                }}
+                .links {{
+                    display: flex;
+                    gap: 20px;
+                    justify-content: center;
+                    margin-top: 30px;
+                }}
+                .links a {{
+                    color: white;
+                    text-decoration: none;
+                    padding: 10px 20px;
+                    background: rgba(255,255,255,0.2);
+                    border-radius: 50px;
+                    transition: 0.3s;
+                }}
+                .links a:hover {{
+                    background: rgba(255,255,255,0.3);
+                    transform: translateY(-2px);
+                }}
+                .footer {{
+                    margin-top: 30px;
+                    text-align: center;
+                    opacity: 0.8;
+                    font-size: 0.9em;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>🚀 MicroWorkers Bot</h1>
+                <div class="status">✅ ONLINE</div>
+                
+                <div class="info">
+                    <p><strong>👑 Owner:</strong> <code>{OWNER_ID}</code></p>
+                    <p><strong>📊 Status:</strong> Monitoring active</p>
+                    <p><strong>📌 Job:</strong> Email Submit + Click + Reply + Screenshot</p>
+                    <p><strong>⏱ Interval:</strong> {CHECK_INTERVAL}s</p>
+                    <p><strong>🌐 URL:</strong> <code>{RENDER_URL}</code></p>
+                </div>
+                
+                <div class="links">
+                    <a href="/health">🔍 Health Check</a>
+                    <a href="https://t.me/{(await get_bot_username())}">📱 Telegram Bot</a>
+                </div>
+                
+                <div class="footer">
+                    <p>Made with ❤️ for MicroWorkers</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        return web.Response(text=html, content_type='text/html')
         
     async def health(request):
-        return web.json_response({'status': 'ok', 'owner': OWNER_ID})
+        """Health check endpoint"""
+        return web.json_response({
+            'status': 'healthy',
+            'owner': OWNER_ID,
+            'uptime': str(datetime.now() - bot.start_time).split('.')[0],
+            'checks': bot.stats['checks'],
+            'notifications': bot.stats['notifications']
+        })
         
+    async def get_bot_username():
+        """Get bot username for link"""
+        try:
+            bot_instance = Bot(token=TELEGRAM_TOKEN)
+            me = await bot_instance.get_me()
+            return me.username
+        except:
+            return "your_bot"
+            
     app.router.add_get('/', home)
     app.router.add_get('/health', health)
     
@@ -437,16 +631,23 @@ async def web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    logger.info(f"🌐 Web: http://0.0.0.0:{PORT}")
+    logger.info(f"🌐 Web server running at {RENDER_URL}")
+
+# ==================== GLOBAL BOT INSTANCE ====================
+
+bot = None
 
 # ==================== MAIN ====================
 
 async def main():
+    """Main function"""
+    global bot
+    bot = MicroWorkersBot()
+    
     # Start web server
     await web_server()
     
-    # Create and run bot
-    bot = MicroWorkersBot()
+    # Run bot
     await bot.run()
 
 if __name__ == '__main__':
@@ -455,4 +656,6 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("👋 Bot stopped")
     except Exception as e:
-        logger.error(f"💥 Error: {e}")
+        logger.error(f"💥 Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
