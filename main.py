@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-MicroWorkers ULTIMATE BOT - With Owner System
+MicroWorkers BOT - FINAL WORKING VERSION
 Owner ID: 7977315501
-Private commands only for owner!
 """
 
 import os
@@ -21,349 +20,261 @@ from aiohttp import web
 # Telegram
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ==================== CONFIGURATION ====================
+# ==================== CONFIG ====================
 
-# Owner ID - SIRF YAHI WALA OWNER HOGA
-OWNER_ID = 7977315501  # 👑 YEH TUM HO BHAI!
-
-# Telegram (Render se aayega)
+OWNER_ID = 7977315501
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
-if not TELEGRAM_TOKEN:
-    print("❌ TELEGRAM_TOKEN environment variable not set!")
-    sys.exit(1)
-
-# API Keys (tumhare diye hue)
 API_SECRET_KEY = 'f0737b7d3a2c4de47564a47ee55a59ea4f16947831848c86efafa0be926d003f'
 VCODE_SECRET_KEY = '121b0fb13a9745890bf300f622e104ce39f5bc42ea8ec8915fd2bda02618d440'
-
-# API Settings
-API_BASE_URL = 'https://ttv.microworkers.com'  # Working endpoint
-CHECK_INTERVAL = 45  # seconds
+API_BASE_URL = 'https://ttv.microworkers.com'
+CHECK_INTERVAL = 60
 PORT = int(os.environ.get('PORT', 10000))
-
-# Data file for storing authorized users
-DATA_FILE = 'data.json'
+DATA_FILE = 'users.json'
 
 # ==================== LOGGING ====================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(message)s',
-    datefmt='%H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
 # ==================== DATA MANAGER ====================
 
 class DataManager:
-    """Manage authorized users"""
-    
     def __init__(self):
-        self.authorized_users: Set[int] = {OWNER_ID}  # Owner always included
+        self.users: Set[int] = {OWNER_ID}
         self.load()
         
     def load(self):
-        """Load authorized users from file"""
         try:
             if os.path.exists(DATA_FILE):
                 with open(DATA_FILE, 'r') as f:
                     data = json.load(f)
-                    self.authorized_users = set(data.get('users', []))
-                    self.authorized_users.add(OWNER_ID)  # Ensure owner is always there
-                    logger.info(f"📂 Loaded {len(self.authorized_users)} authorized users")
-        except Exception as e:
-            logger.error(f"Error loading data: {e}")
+                    self.users = set(data.get('users', []))
+                    self.users.add(OWNER_ID)
+                logger.info(f"📂 Loaded {len(self.users)} users")
+        except:
+            pass
             
     def save(self):
-        """Save authorized users to file"""
         try:
             with open(DATA_FILE, 'w') as f:
-                json.dump({'users': list(self.authorized_users)}, f)
-            logger.info("💾 Data saved")
-        except Exception as e:
-            logger.error(f"Error saving data: {e}")
+                json.dump({'users': list(self.users)}, f)
+        except:
+            pass
             
-    def is_authorized(self, user_id: int) -> bool:
-        """Check if user is authorized"""
-        return user_id in self.authorized_users
-        
     def is_owner(self, user_id: int) -> bool:
-        """Check if user is owner"""
         return user_id == OWNER_ID
         
+    def is_user(self, user_id: int) -> bool:
+        return user_id in self.users
+        
     def add_user(self, user_id: int) -> bool:
-        """Add user to authorized list"""
-        if user_id not in self.authorized_users:
-            self.authorized_users.add(user_id)
+        if user_id not in self.users:
+            self.users.add(user_id)
             self.save()
             return True
         return False
         
     def remove_user(self, user_id: int) -> bool:
-        """Remove user from authorized list (can't remove owner)"""
-        if user_id != OWNER_ID and user_id in self.authorized_users:
-            self.authorized_users.remove(user_id)
+        if user_id != OWNER_ID and user_id in self.users:
+            self.users.remove(user_id)
             self.save()
             return True
         return False
         
-    def get_all_users(self) -> List[int]:
-        """Get all authorized users"""
-        return list(self.authorized_users)
+    def get_users(self) -> List[int]:
+        return list(self.users)
 
 # ==================== API CLIENT ====================
 
 class MicroWorkersAPI:
-    """MicroWorkers API Client"""
-    
     def __init__(self):
         self.api_key = API_SECRET_KEY
         self.vcode_key = VCODE_SECRET_KEY
         self.base_url = API_BASE_URL
         self.session = None
         
-    async def ensure_session(self):
+    async def get_session(self):
         if not self.session:
             self.session = aiohttp.ClientSession()
-            
+        return self.session
+        
     async def close(self):
         if self.session:
             await self.session.close()
             
-    def _generate_signatures(self, timestamp: str, method: str, path: str) -> Dict:
-        """Generate API signatures"""
+    def _sign(self, timestamp: str, method: str, path: str) -> Dict:
         payload = f"{timestamp}{method}{path}"
+        vcode = hmac.new(self.vcode_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        auth = hmac.new(self.api_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        return {'X-API-Key': self.api_key, 'X-VCode': vcode, 'X-Auth': auth, 'X-Timestamp': timestamp}
         
-        vcode = hmac.new(
-            self.vcode_key.encode(),
-            payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        auth = hmac.new(
-            self.api_key.encode(),
-            payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        return {
-            'X-API-Key': self.api_key,
-            'X-VCode': vcode,
-            'X-Auth': auth,
-            'X-Timestamp': timestamp
-        }
-        
-    async def get_jobs(self) -> Optional[List[Dict]]:
-        """Fetch jobs from API"""
+    async def get_jobs(self):
         try:
-            await self.ensure_session()
-            
-            timestamp = str(int(time.time() * 1000))
-            path = "/api/v2/jobs?type=all&limit=100"
-            
-            headers = self._generate_signatures(timestamp, 'GET', path)
+            session = await self.get_session()
+            ts = str(int(time.time() * 1000))
+            headers = self._sign(ts, 'GET', '/api/v2/jobs?type=all&limit=100')
             headers['Content-Type'] = 'application/json'
             
-            url = f"{self.base_url}{path}"
-            
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
+            async with session.get(f"{self.base_url}/api/v2/jobs?type=all&limit=100", headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
                     return data.get('jobs') if isinstance(data, dict) else data
-                else:
-                    return None
-                    
-        except Exception:
+        except:
             return None
-            
-    def find_target_job(self, jobs: List[Dict]) -> Optional[Dict]:
-        """Find Email Submit job"""
+        return None
+        
+    def find_job(self, jobs):
         if not jobs:
             return None
-            
         keywords = ['email', 'submit', 'click', 'reply', 'screenshot']
-        
         for job in jobs:
             try:
                 title = str(job.get('title', job.get('name', ''))).lower()
-                
                 if all(k in title for k in keywords):
                     completed = int(job.get('completed_count', job.get('completed', 0)))
                     total = int(job.get('total_jobs', job.get('total', 100)))
-                    remaining = total - completed
-                    
                     return {
                         'payment': '0.10',
                         'completed': completed,
                         'total': total,
-                        'remaining': remaining,
-                        'timestamp': datetime.now().strftime('%d %H:%M')
+                        'remaining': total - completed,
+                        'time': datetime.now().strftime('%d %H:%M')
                     }
             except:
                 continue
-                
         return None
 
-# ==================== TELEGRAM BOT ====================
+# ==================== BOT ====================
 
 class MicroWorkersBot:
-    """Main Bot with Owner System"""
-    
     def __init__(self):
         self.token = TELEGRAM_TOKEN
-        self.bot = Bot(token=self.token)
-        self.api = MicroWorkersAPI()
         self.data = DataManager()
+        self.api = MicroWorkersAPI()
         self.start_time = datetime.now()
         self.stats = {'checks': 0, 'notifications': 0}
-        self.notification_cache = set()
-        self.job_monitoring = True
+        self.cache = set()
+        self.running = True
         
-    # ========== AUTHORIZATION CHECK ==========
+    # ========== NOTIFICATION ==========
     
-    async def is_authorized(self, update) -> bool:
-        """Check if user is authorized"""
-        user_id = update.effective_user.id
-        if not self.data.is_authorized(user_id):
-            await update.message.reply_text(
-                "❌ *Unauthorized Access*\n\n"
-                "You are not authorized to use this bot.\n"
-                "Contact @YOUR_USERNAME for access.",
-                parse_mode='Markdown'
-            )
-            return False
-        return True
-        
-    # ========== JOB MONITORING ==========
-    
-    async def monitor_jobs(self):
-        """Monitor jobs continuously"""
-        logger.info("🔍 Job monitoring started...")
-        
-        while self.job_monitoring:
-            try:
-                self.stats['checks'] += 1
-                
-                jobs = await self.api.get_jobs()
-                if jobs:
-                    job = self.api.find_target_job(jobs)
-                    if job:
-                        cache_key = f"{job['completed']}_{job['total']}"
-                        
-                        if cache_key not in self.notification_cache:
-                            await self.send_job_notification(job)
-                            self.notification_cache.add(cache_key)
-                            
-                            # Clear old cache
-                            if len(self.notification_cache) > 100:
-                                self.notification_cache.clear()
-                    
-                await asyncio.sleep(CHECK_INTERVAL)
-                
-            except Exception as e:
-                logger.error(f"Monitor error: {e}")
-                await asyncio.sleep(60)
-                
-    async def send_job_notification(self, job: Dict):
-        """Send job notification to ALL authorized users"""
-        
-        message = f"""Reply + Screenshot (Read Updated...)
+    def format_message(self, job):
+        return f"""Reply + Screenshot (Read Updated...)
 
 ${job['payment']} {job['completed']}/{job['total']} {job['remaining']} left
 
-Open Job    {job['timestamp']}
+Open Job    {job['time']}
 
 Website: Email Submit + Click + Reply + Screenshot (Read Updated...)
 
 ${job['payment']} {job['completed']}/{job['total']} {job['remaining']} left
 
-Open Job    {job['timestamp']}
+Open Job    {job['time']}
 
 Microworkers Alerts
 Website: Email Submit + Click + Reply + Screenshot (Read Updated...)
 
 ${job['payment']} {job['completed']}/{job['total']} {job['remaining']} left
 
-Open Job    {job['timestamp']}
+Open Job    {job['time']}
 
 Website: Email Submit + Click + Reply + Screenshot (Read Updated...)
 
 ${job['payment']} {job['completed']}/{job['total']} {job['remaining']} left
 
-Open Job    {job['timestamp']}"""
+Open Job    {job['time']}"""
         
-        keyboard = [[InlineKeyboardButton("🚀 OPEN JOB", url="https://www.microworkers.com/jobs.php")]]
-        
-        # Send to ALL authorized users
-        sent_count = 0
-        for user_id in self.data.get_all_users():
+    async def send_to_all(self, message, keyboard=None):
+        bot = Bot(token=self.token)
+        sent = 0
+        for uid in self.data.get_users():
             try:
-                await self.bot.send_message(
-                    chat_id=user_id,
-                    text=message,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                sent_count += 1
-            except Exception as e:
-                logger.error(f"Failed to send to {user_id}: {e}")
-                
-        self.stats['notifications'] += 1
-        logger.info(f"✅ Notification sent to {sent_count} users")
+                await bot.send_message(chat_id=uid, text=message, reply_markup=keyboard, parse_mode='Markdown')
+                sent += 1
+            except:
+                pass
+        return sent
         
-    # ========== COMMANDS ==========
-    
-    async def cmd_start(self, update, context):
-        """Start command - public"""
-        if not await self.is_authorized(update):
+    async def send_notification(self, job):
+        key = f"{job['completed']}_{job['total']}"
+        if key in self.cache:
             return
             
-        user_id = update.effective_user.id
-        is_owner = self.data.is_owner(user_id)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🚀 OPEN JOB", url="https://www.microworkers.com/jobs.php")
+        ]])
         
-        message = (
-            f"🚀 *MicroWorkers Bot*\n\n"
-            f"📌 Monitoring: `Email Submit + Click + Reply + Screenshot`\n"
-            f"⏱ Interval: `{CHECK_INTERVAL}s`\n\n"
-        )
+        sent = await self.send_to_all(self.format_message(job), keyboard)
+        self.cache.add(key)
+        self.stats['notifications'] += 1
+        logger.info(f"✅ Notification sent to {sent} users")
         
-        if is_owner:
-            message += "👑 *Owner Commands:*\n"
-            message += "`/users` - List all users\n"
-            message += "`/add [user_id]` - Add user\n"
-            message += "`/remove [user_id]` - Remove user\n"
-            message += "`/broadcast [msg]` - Broadcast\n\n"
+        if len(self.cache) > 100:
+            self.cache.clear()
             
-        message += "📱 *User Commands:*\n"
-        message += "`/status` - Bot status\n"
-        message += "`/test` - Test notification\n"
-        message += "`/help` - Show help"
+    # ========== MONITORING ==========
+    
+    async def monitor(self):
+        logger.info("🔍 Monitoring started...")
+        while self.running:
+            try:
+                self.stats['checks'] += 1
+                jobs = await self.api.get_jobs()
+                if jobs:
+                    job = self.api.find_job(jobs)
+                    if job:
+                        await self.send_notification(job)
+                await asyncio.sleep(CHECK_INTERVAL)
+            except Exception as e:
+                logger.error(f"Monitor error: {e}")
+                await asyncio.sleep(60)
+                
+    # ========== COMMANDS ==========
+    
+    async def start(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_user(uid):
+            await update.message.reply_text("❌ You are not authorized to use this bot.")
+            return
+            
+        msg = "🚀 *MicroWorkers Bot*\n\n"
+        msg += f"📌 Monitoring: `Email Submit Job`\n"
+        msg += f"⏱ Interval: `{CHECK_INTERVAL}s`\n\n"
         
-        await update.message.reply_text(message, parse_mode='Markdown')
+        if self.data.is_owner(uid):
+            msg += "👑 *Owner Commands*\n"
+            msg += "`/users` - List users\n"
+            msg += "`/add [id]` - Add user\n"
+            msg += "`/remove [id]` - Remove user\n"
+            msg += "`/broadcast [msg]` - Broadcast\n\n"
+            
+        msg += "📱 *Commands*\n"
+        msg += "`/status` - Bot status\n"
+        msg += "`/test` - Test notification\n"
+        msg += "`/help` - Help"
         
-    async def cmd_status(self, update, context):
-        """Status command - public"""
-        if not await self.is_authorized(update):
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        
+    async def status(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_user(uid):
             return
             
         uptime = datetime.now() - self.start_time
+        msg = f"📊 *Status*\n\n"
+        msg += f"```\n"
+        msg += f"Uptime: {str(uptime).split('.')[0]}\n"
+        msg += f"Checks: {self.stats['checks']}\n"
+        msg += f"Notifications: {self.stats['notifications']}\n"
+        msg += f"Users: {len(self.data.get_users())}\n"
+        msg += f"```"
+        await update.message.reply_text(msg, parse_mode='Markdown')
         
-        message = (
-            f"📊 *Bot Status*\n\n"
-            f"```\n"
-            f"Uptime: {str(uptime).split('.')[0]}\n"
-            f"Checks: {self.stats['checks']}\n"
-            f"Notifications: {self.stats['notifications']}\n"
-            f"Users: {len(self.data.get_all_users())}\n"
-            f"```"
-        )
-        
-        await update.message.reply_text(message, parse_mode='Markdown')
-        
-    async def cmd_test(self, update, context):
-        """Test command - send test notification"""
-        if not await self.is_authorized(update):
+    async def test(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_user(uid):
             return
             
         test_job = {
@@ -371,15 +282,14 @@ Open Job    {job['timestamp']}"""
             'completed': 113,
             'total': 400,
             'remaining': 287,
-            'timestamp': datetime.now().strftime('%d %H:%M')
+            'time': datetime.now().strftime('%d %H:%M')
         }
+        await self.send_notification(test_job)
+        await update.message.reply_text("✅ Test notification sent!")
         
-        await self.send_job_notification(test_job)
-        await update.message.reply_text("✅ Test notification sent to all users!")
-        
-    async def cmd_help(self, update, context):
-        """Help command - public"""
-        if not await self.is_authorized(update):
+    async def help(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_user(uid):
             return
             
         await update.message.reply_text(
@@ -388,170 +298,129 @@ Open Job    {job['timestamp']}"""
             "`Email Submit + Click + Reply + Screenshot`\n\n"
             "Commands:\n"
             "/start - Welcome\n"
-            "/status - Bot status\n"
-            "/test - Test notification\n"
-            "/help - This help",
+            "/status - Status\n"
+            "/test - Test\n"
+            "/help - Help",
             parse_mode='Markdown'
         )
         
-    # ========== OWNER ONLY COMMANDS ==========
+    # ========== OWNER COMMANDS ==========
     
-    async def cmd_users(self, update, context):
-        """List all users - OWNER ONLY"""
-        user_id = update.effective_user.id
-        
-        if not self.data.is_owner(user_id):
-            await update.message.reply_text("❌ This command is only for owner!")
+    async def users(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_owner(uid):
             return
             
-        users = self.data.get_all_users()
-        message = "👥 *Authorized Users*\n\n"
-        
-        for uid in users:
-            if uid == OWNER_ID:
-                message += f"👑 `{uid}` (Owner)\n"
+        msg = "👥 *Users*\n\n"
+        for u in self.data.get_users():
+            if u == OWNER_ID:
+                msg += f"👑 `{u}` (Owner)\n"
             else:
-                message += f"👤 `{uid}`\n"
-                
-        message += f"\nTotal: {len(users)} users"
+                msg += f"👤 `{u}`\n"
+        msg += f"\nTotal: {len(self.data.get_users())}"
+        await update.message.reply_text(msg, parse_mode='Markdown')
         
-        await update.message.reply_text(message, parse_mode='Markdown')
-        
-    async def cmd_add(self, update, context):
-        """Add user - OWNER ONLY"""
-        user_id = update.effective_user.id
-        
-        if not self.data.is_owner(user_id):
-            await update.message.reply_text("❌ This command is only for owner!")
+    async def add(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_owner(uid):
             return
             
         try:
-            new_user = int(context.args[0])
-            if self.data.add_user(new_user):
-                await update.message.reply_text(f"✅ User `{new_user}` added successfully!")
+            new_id = int(context.args[0])
+            if self.data.add_user(new_id):
+                await update.message.reply_text(f"✅ Added `{new_id}`")
             else:
-                await update.message.reply_text(f"⚠️ User `{new_user}` already exists!")
+                await update.message.reply_text(f"⚠️ Already exists")
         except:
             await update.message.reply_text("❌ Usage: /add [user_id]")
             
-    async def cmd_remove(self, update, context):
-        """Remove user - OWNER ONLY"""
-        user_id = update.effective_user.id
-        
-        if not self.data.is_owner(user_id):
-            await update.message.reply_text("❌ This command is only for owner!")
+    async def remove(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_owner(uid):
             return
             
         try:
-            remove_id = int(context.args[0])
-            if self.data.remove_user(remove_id):
-                await update.message.reply_text(f"✅ User `{remove_id}` removed successfully!")
+            rem_id = int(context.args[0])
+            if self.data.remove_user(rem_id):
+                await update.message.reply_text(f"✅ Removed `{rem_id}`")
             else:
-                await update.message.reply_text(f"⚠️ Cannot remove owner or user not found!")
+                await update.message.reply_text(f"⚠️ Cannot remove owner or not found")
         except:
             await update.message.reply_text("❌ Usage: /remove [user_id]")
             
-    async def cmd_broadcast(self, update, context):
-        """Broadcast message to all users - OWNER ONLY"""
-        user_id = update.effective_user.id
-        
-        if not self.data.is_owner(user_id):
-            await update.message.reply_text("❌ This command is only for owner!")
+    async def broadcast(self, update, context):
+        uid = update.effective_user.id
+        if not self.data.is_owner(uid):
             return
             
         if not context.args:
             await update.message.reply_text("❌ Usage: /broadcast [message]")
             return
             
-        message = " ".join(context.args)
-        broadcast_msg = f"📢 *Broadcast from Owner*\n\n{message}"
+        msg = " ".join(context.args)
+        sent = await self.send_to_all(f"📢 *Broadcast*\n\n{msg}", None)
+        await update.message.reply_text(f"✅ Sent to {sent} users")
         
-        sent = 0
-        failed = 0
-        
-        for uid in self.data.get_all_users():
-            if uid != user_id:  # Don't send to owner
-                try:
-                    await self.bot.send_message(
-                        chat_id=uid,
-                        text=broadcast_msg,
-                        parse_mode='Markdown'
-                    )
-                    sent += 1
-                except:
-                    failed += 1
-                    
-        await update.message.reply_text(
-            f"✅ Broadcast sent!\n"
-            f"📨 Sent: {sent}\n"
-            f"❌ Failed: {failed}"
-        )
-        
-    # ========== RUN BOT ==========
+    # ========== RUN ==========
     
     async def run(self):
-        """Main run method"""
         print("\n" + "="*50)
-        print("🚀 MICROWORKERS BOT - OWNER EDITION")
+        print("🚀 MICROWORKERS BOT STARTING...")
         print("="*50)
-        print(f"👑 Owner ID: {OWNER_ID}")
-        print(f"📊 Total Users: {len(self.data.get_all_users())}")
+        print(f"👑 Owner: {OWNER_ID}")
+        print(f"📊 Users: {len(self.data.get_users())}")
         print("="*50 + "\n")
         
-        # Send startup message to owner
+        # Send startup to owner
         try:
-            await self.bot.send_message(
+            bot = Bot(token=self.token)
+            await bot.send_message(
                 chat_id=OWNER_ID,
                 text="✅ *Bot Started!*\n\n"
                      f"👑 Owner: `{OWNER_ID}`\n"
-                     f"📊 Users: `{len(self.data.get_all_users())}`\n"
-                     f"⏱ Interval: `{CHECK_INTERVAL}s`",
+                     f"📊 Users: `{len(self.data.get_users())}`",
                 parse_mode='Markdown'
             )
-            logger.info("✅ Startup message sent to owner")
-        except Exception as e:
-            logger.error(f"Failed to send startup message: {e}")
+        except:
+            pass
             
         # Create application
         app = Application.builder().token(self.token).build()
         
-        # Public commands (for authorized users)
-        app.add_handler(CommandHandler("start", self.cmd_start))
-        app.add_handler(CommandHandler("status", self.cmd_status))
-        app.add_handler(CommandHandler("test", self.cmd_test))
-        app.add_handler(CommandHandler("help", self.cmd_help))
-        
-        # Owner only commands
-        app.add_handler(CommandHandler("users", self.cmd_users))
-        app.add_handler(CommandHandler("add", self.cmd_add))
-        app.add_handler(CommandHandler("remove", self.cmd_remove))
-        app.add_handler(CommandHandler("broadcast", self.cmd_broadcast))
+        # Add handlers
+        app.add_handler(CommandHandler("start", self.start))
+        app.add_handler(CommandHandler("status", self.status))
+        app.add_handler(CommandHandler("test", self.test))
+        app.add_handler(CommandHandler("help", self.help))
+        app.add_handler(CommandHandler("users", self.users))
+        app.add_handler(CommandHandler("add", self.add))
+        app.add_handler(CommandHandler("remove", self.remove))
+        app.add_handler(CommandHandler("broadcast", self.broadcast))
         
         # Start monitoring
-        asyncio.create_task(self.monitor_jobs())
+        asyncio.create_task(self.monitor())
         
-        # Start bot
+        # Start bot - FIXED: using run_polling directly
         logger.info("✅ Bot is running!")
-        await app.run_polling(allowed_updates=['message'])
+        await app.run_polling()
 
 # ==================== WEB SERVER ====================
 
 async def web_server():
-    """Simple web server for Render health checks"""
     app = web.Application()
     
     async def home(request):
-        uptime = datetime.now() - bot.start_time if 'bot' in globals() else datetime.now() - datetime.now()
         return web.Response(
             text=f"""
             <html>
                 <head><title>MicroWorkers Bot</title></head>
-                <body style="font-family: Arial; padding: 40px;">
-                    <h1>🚀 MicroWorkers Bot</h1>
-                    <p>Status: ✅ ONLINE</p>
-                    <p>Owner ID: {OWNER_ID}</p>
-                    <p>Uptime: {str(uptime).split('.')[0]}</p>
-                    <p><a href="/health">Health Check</a></p>
+                <body style="font-family: Arial; padding: 40px; background: #f0f2f5;">
+                    <div style="max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <h1 style="color: #1a73e8;">🚀 MicroWorkers Bot</h1>
+                        <p style="font-size: 18px;">Status: <span style="color: green; font-weight: bold;">✅ ONLINE</span></p>
+                        <p>👑 Owner ID: <code>{OWNER_ID}</code></p>
+                        <p>📊 <a href="/health">Health Check</a></p>
+                    </div>
                 </body>
             </html>
             """,
@@ -568,20 +437,16 @@ async def web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    logger.info(f"🌐 Web server running on port {PORT}")
+    logger.info(f"🌐 Web: http://0.0.0.0:{PORT}")
 
 # ==================== MAIN ====================
 
-bot = None
-
 async def main():
-    global bot
-    bot = MicroWorkersBot()
-    
     # Start web server
     await web_server()
     
-    # Run bot
+    # Create and run bot
+    bot = MicroWorkersBot()
     await bot.run()
 
 if __name__ == '__main__':
@@ -590,4 +455,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("👋 Bot stopped")
     except Exception as e:
-        logger.error(f"💥 Fatal error: {e}")
+        logger.error(f"💥 Error: {e}")
