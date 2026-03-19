@@ -1,0 +1,8 @@
+# Core dependencies
+python-telegram-bot==20.7
+aiohttp==3.9.1
+
+# Optional but recommended
+colorama==0.4.6
+
+# No extra bloat - just what's needed!
