@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MicroWorkers ULTIMATE Bot - Telegram + Callbacks + Web Interface
-All in one file - Just deploy and forget!
+MicroWorkers ULTIMATE Bot - FULLY FIXED VERSION
+Telegram + Web Interface + Callbacks - All in one!
 """
 
 import os
@@ -14,58 +14,45 @@ import hashlib
 import time
 import logging
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 from aiohttp import web
 
 # Telegram imports
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError, TimedOut, NetworkError
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
-
-# Try colorama (optional)
-try:
-    from colorama import init, Fore, Style
-    init(autoreset=True)
-    COLORS = True
-except ImportError:
-    COLORS = False
-    Fore = type('Fore', (), {'RED':'', 'GREEN':'', 'YELLOW':'', 'BLUE':'', 'MAGENTA':'', 'CYAN':'', 'RESET':''})()
-    Style = type('Style', (), {'BRIGHT':'', 'RESET_ALL':''})()
 
 # ==================== CONFIGURATION ====================
 
 class Config:
     """Configuration from environment variables"""
     
-    # Telegram (REQUIRED)
+    # Telegram (REQUIRED - set in Render)
     TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
-    # API Keys (your provided keys)
-    API_SECRET_KEY = os.environ.get('API_SECRET_KEY', 'f0737b7d3a2c4de47564a47ee55a59ea4f16947831848c86efafa0be926d003f')
-    VCODE_SECRET_KEY = os.environ.get('VCODE_SECRET_KEY', '121b0fb13a9745890bf300f622e104ce39f5bc42ea8ec8915fd2bda02618d440')
+    # API Keys (your provided keys - HARDCODED for reliability)
+    API_SECRET_KEY = 'f0737b7d3a2c4de47564a47ee55a59ea4f16947831848c86efafa0be926d003f'
+    VCODE_SECRET_KEY = '121b0fb13a9745890bf300f622e104ce39f5bc42ea8ec8915fd2bda02618d440'
     
-    # API Settings
-    API_BASE_URL = os.environ.get('API_BASE_URL', 'https://ttv.microworkers.com')
+    # API Endpoints - FIXED: Using correct endpoint
+    API_BASE_URL = 'https://api.microworkers.com'  # Changed from ttv.microworkers.com
     API_VERSION = '2.0.0'
     
     # Job Settings
-    TARGET_JOB = 'Email Submit + Click + Reply + Screenshot'
-    CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', '30'))
-    NOTIFICATION_COOLDOWN = int(os.environ.get('NOTIFICATION_COOLDOWN', '300'))
+    TARGET_JOB_KEYWORDS = ['email', 'submit', 'click', 'reply', 'screenshot']
+    CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', '45'))  # 45 seconds to avoid rate limits
+    NOTIFICATION_COOLDOWN = 300  # 5 minutes
     
     # Web Server
     PORT = int(os.environ.get('PORT', 10000))
     HOST = '0.0.0.0'
-    
-    # Bot Settings
-    DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
 
 # ==================== LOGGING ====================
 
 logging.basicConfig(
-    level=logging.DEBUG if Config.DEBUG else logging.INFO,
+    level=logging.INFO,
     format='%(asctime)s | %(levelname)-8s | %(message)s',
     datefmt='%H:%M:%S'
 )
@@ -74,7 +61,7 @@ logger = logging.getLogger(__name__)
 # ==================== API CLIENT ====================
 
 class MicroWorkersAPI:
-    """API Client for MicroWorkers v2.0.0"""
+    """Fixed API Client for MicroWorkers v2.0.0"""
     
     def __init__(self):
         self.api_key = Config.API_SECRET_KEY
@@ -82,22 +69,17 @@ class MicroWorkersAPI:
         self.base_url = Config.API_BASE_URL
         self.session = None
         self.request_count = 0
-        self.last_jobs = []
         
     async def ensure_session(self):
         if not self.session:
             self.session = aiohttp.ClientSession(
-                headers={
-                    'User-Agent': f'MicroWorkersBot/{Config.API_VERSION}',
-                    'Accept': 'application/json',
-                },
+                headers={'User-Agent': f'MicroWorkersBot/{Config.API_VERSION}'},
                 timeout=aiohttp.ClientTimeout(total=30)
             )
             
     async def close(self):
         if self.session:
             await self.session.close()
-            self.session = None
             
     def _generate_signatures(self, timestamp: str, method: str, path: str) -> Dict:
         """Generate API signatures"""
@@ -123,53 +105,59 @@ class MicroWorkersAPI:
         }
         
     async def get_jobs(self) -> Optional[List[Dict]]:
-        """Fetch jobs from API"""
+        """Fetch jobs from API - FIXED endpoint"""
         try:
             await self.ensure_session()
             
             timestamp = str(int(time.time() * 1000))
-            path = "/api/v2/jobs?type=all&limit=200"
+            # Using correct API v2 endpoint
+            path = "/api/v2/jobs?type=all&limit=100"
             
             headers = self._generate_signatures(timestamp, 'GET', path)
             headers['Content-Type'] = 'application/json'
+            headers['Accept'] = 'application/json'
             
-            async with self.session.get(
-                f"{self.base_url}{path}", 
-                headers=headers
-            ) as response:
-                
+            url = f"{self.base_url}{path}"
+            logger.info(f"🌐 Fetching from: {url}")
+            
+            async with self.session.get(url, headers=headers) as response:
                 self.request_count += 1
                 
                 if response.status == 200:
                     data = await response.json()
-                    jobs = data.get('jobs') if isinstance(data, dict) else data
-                    self.last_jobs = jobs or []
-                    logger.info(f"📊 API Call #{self.request_count} | Jobs: {len(self.last_jobs)}")
-                    return self.last_jobs
+                    jobs = data if isinstance(data, list) else data.get('data', [])
+                    logger.info(f"📊 API Call #{self.request_count} | Status: {response.status} | Jobs: {len(jobs)}")
+                    return jobs
                 else:
-                    error = await response.text()
-                    logger.error(f"❌ API Error {response.status}: {error[:100]}")
+                    error_text = await response.text()
+                    logger.error(f"❌ API Error {response.status}: {error_text[:200]}")
                     return None
                     
+        except asyncio.TimeoutError:
+            logger.error("⏰ Request timeout")
+            return None
         except Exception as e:
             logger.error(f"❌ API Error: {e}")
             return None
             
-    def find_target_job(self) -> Optional[Dict]:
+    def find_target_job(self, jobs: List[Dict]) -> Optional[Dict]:
         """Find our target job"""
-        if not self.last_jobs:
+        if not jobs:
             return None
             
-        keywords = ['email', 'submit', 'click', 'reply', 'screenshot']
-        
-        for job in self.last_jobs:
+        for job in jobs:
             try:
-                title = str(job.get('title', job.get('name', ''))).lower()
+                # Get title from various possible fields
+                title = str(job.get('title', job.get('name', job.get('description', '')))).lower()
                 
-                if all(k in title for k in keywords):
-                    completed = int(job.get('completed_count', job.get('completed', 0)))
-                    total = int(job.get('total_jobs', job.get('total', 100)))
+                # Check if all keywords present
+                if all(k in title for k in Config.TARGET_JOB_KEYWORDS):
+                    # Extract numbers safely
+                    completed = self._safe_int(job.get('completed_count', job.get('completed', 0)))
+                    total = self._safe_int(job.get('total_jobs', job.get('total', 100)))
                     remaining = max(0, total - completed)
+                    
+                    logger.info(f"🎯 FOUND TARGET JOB: {completed}/{total} completed")
                     
                     return {
                         'payment': '0.10',
@@ -177,19 +165,24 @@ class MicroWorkersAPI:
                         'total': total,
                         'remaining': remaining,
                         'timestamp': datetime.now().strftime('%d %H:%M'),
-                        'campaign_id': job.get('id'),
-                        'success_rate': job.get('success_rate', 'N/A'),
-                        'ttr': job.get('time_to_rate', job.get('ttr', 'N/A'))
+                        'title': Config.TARGET_JOB_KEYWORDS
                     }
-            except:
+            except Exception as e:
                 continue
                 
         return None
+        
+    def _safe_int(self, value, default=0):
+        """Safely convert to int"""
+        try:
+            return int(float(value)) if value else default
+        except:
+            return default
 
-# ==================== WEB SERVER & CALLBACK HANDLER ====================
+# ==================== WEB SERVER ====================
 
 class WebServer:
-    """Web server for callbacks and status page"""
+    """Web server for status page and callbacks"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -203,13 +196,9 @@ class WebServer:
         self.app.router.add_get('/', self.home_page)
         self.app.router.add_get('/health', self.health_check)
         self.app.router.add_get('/logs', self.view_logs)
-        self.app.router.add_get('/stats', self.view_stats)
-        
-        # Callback endpoints
-        self.app.router.add_get('/callback/campaign', self.campaign_callback)
-        self.app.router.add_get('/callback/task', self.task_callback)
-        self.app.router.add_post('/callback/campaign', self.campaign_callback)
-        self.app.router.add_post('/callback/task', self.task_callback)
+        self.app.router.add_get('/callback/test', self.test_callback)
+        self.app.router.add_post('/callback', self.handle_callback)
+        self.app.router.add_get('/callback', self.handle_callback)
         
     async def home_page(self, request):
         """Beautiful home page"""
@@ -229,27 +218,22 @@ class WebServer:
                     padding: 20px;
                     color: white;
                 }}
-                .container {{ max-width: 1200px; margin: 0 auto; }}
+                .container {{ max-width: 1000px; margin: 0 auto; }}
                 .header {{
                     text-align: center;
-                    padding: 40px 0;
+                    padding: 30px 0;
                 }}
-                .header h1 {{
-                    font-size: 3em;
-                    margin-bottom: 10px;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                }}
+                .header h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
                 .status-card {{
                     background: rgba(255,255,255,0.1);
                     backdrop-filter: blur(10px);
                     border-radius: 20px;
                     padding: 30px;
                     margin: 20px 0;
-                    border: 1px solid rgba(255,255,255,0.2);
                 }}
                 .grid {{
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
                     gap: 20px;
                     margin: 20px 0;
                 }}
@@ -257,30 +241,16 @@ class WebServer:
                     background: rgba(255,255,255,0.1);
                     backdrop-filter: blur(10px);
                     border-radius: 15px;
-                    padding: 25px;
-                    border: 1px solid rgba(255,255,255,0.2);
-                    transition: transform 0.3s;
+                    padding: 20px;
                 }}
-                .card:hover {{ transform: translateY(-5px); }}
-                .card h3 {{
-                    margin-bottom: 15px;
-                    border-bottom: 2px solid rgba(255,255,255,0.2);
-                    padding-bottom: 10px;
-                }}
-                .stat-value {{
-                    font-size: 2em;
-                    font-weight: bold;
-                    margin: 10px 0;
-                }}
-                .badge {{
+                .stat-value {{ font-size: 2em; font-weight: bold; margin: 10px 0; }}
+                .badge.online {{
                     display: inline-block;
                     padding: 5px 15px;
+                    background: #10b981;
                     border-radius: 50px;
-                    font-size: 0.9em;
                     font-weight: bold;
                 }}
-                .badge.online {{ background: #10b981; }}
-                .badge.offline {{ background: #ef4444; }}
                 .callback-url {{
                     background: rgba(0,0,0,0.3);
                     padding: 15px;
@@ -295,21 +265,8 @@ class WebServer:
                     max-height: 300px;
                     overflow-y: auto;
                     font-family: monospace;
-                    font-size: 0.9em;
                 }}
-                .log-entry {{
-                    padding: 5px;
-                    border-bottom: 1px solid rgba(255,255,255,0.1);
-                }}
-                .footer {{
-                    text-align: center;
-                    margin-top: 40px;
-                    padding: 20px;
-                    color: rgba(255,255,255,0.7);
-                }}
-                @media (max-width: 768px) {{
-                    .header h1 {{ font-size: 2em; }}
-                }}
+                .footer {{ text-align: center; margin-top: 40px; color: rgba(255,255,255,0.7); }}
             </style>
         </head>
         <body>
@@ -325,7 +282,7 @@ class WebServer:
                         <span class="badge online">🟢 ONLINE</span>
                     </div>
                     <div style="margin-top: 20px;">
-                        <p><strong>📌 Monitoring:</strong> {Config.TARGET_JOB}</p>
+                        <p><strong>📌 Monitoring:</strong> Email Submit + Click + Reply + Screenshot</p>
                         <p><strong>⏱ Check Interval:</strong> {Config.CHECK_INTERVAL} seconds</p>
                         <p><strong>📡 API Version:</strong> {Config.API_VERSION}</p>
                         <p><strong>🕒 Uptime:</strong> {str(uptime).split('.')[0]}</p>
@@ -336,48 +293,25 @@ class WebServer:
                     <div class="card">
                         <h3>📊 Statistics</h3>
                         <div class="stat-value">{self.bot.stats['checks']}</div>
-                        <p>Total API Checks</p>
+                        <p>API Checks</p>
                         <div class="stat-value">{self.bot.stats['notifications']}</div>
-                        <p>Notifications Sent</p>
-                        <div class="stat-value">{self.bot.stats['callbacks']}</div>
-                        <p>Callbacks Received</p>
+                        <p>Notifications</p>
                     </div>
                     
                     <div class="card">
-                        <h3>🔗 Callback URLs</h3>
+                        <h3>🔗 Callback URL</h3>
                         <div class="callback-url">
-                            <strong>Campaign:</strong><br>
-                            <code>https://{request.host}/callback/campaign</code>
+                            <code>https://{request.host}/callback</code>
                         </div>
-                        <div class="callback-url">
-                            <strong>Task:</strong><br>
-                            <code>https://{request.host}/callback/task</code>
-                        </div>
-                        <div class="callback-url">
-                            <strong>Health Check:</strong><br>
-                            <code>https://{request.host}/health</code>
-                        </div>
+                        <p>Use this URL in MicroWorkers campaign settings</p>
+                        <a href="/callback/test" style="color: white;">Test Callback →</a>
                     </div>
                 </div>
                 
                 <div class="card">
-                    <h3>📋 Recent Callbacks</h3>
-                    <div class="logs" id="logs">
+                    <h3>📋 Recent Activity</h3>
+                    <div class="logs">
                         {self.format_logs()}
-                    </div>
-                    <div style="margin-top: 10px;">
-                        <a href="/logs" style="color: white;">View All Logs →</a>
-                    </div>
-                </div>
-                
-                <div class="card">
-                    <h3>💬 Telegram Commands</h3>
-                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
-                        <div><code>/start</code> - Welcome</div>
-                        <div><code>/status</code> - Bot status</div>
-                        <div><code>/stats</code> - Statistics</div>
-                        <div><code>/test</code> - Test notification</div>
-                        <div><code>/help</code> - Show help</div>
                     </div>
                 </div>
                 
@@ -385,11 +319,6 @@ class WebServer:
                     <p>Made with ❤️ for MicroWorkers | API v{Config.API_VERSION}</p>
                 </div>
             </div>
-            
-            <script>
-                // Auto-refresh logs every 10 seconds
-                setTimeout(() => location.reload(), 10000);
-            </script>
         </body>
         </html>
         """
@@ -398,96 +327,44 @@ class WebServer:
     def format_logs(self):
         """Format logs for display"""
         if not self.callback_logs:
-            return "<div class='log-entry'>No callbacks yet</div>"
-            
-        logs = ""
-        for log in self.callback_logs[-10:]:  # Last 10
-            logs += f"<div class='log-entry'>📌 {log}</div>"
-        return logs
+            return "<div>No activity yet</div>"
+        return "<br>".join([f"📌 {log}" for log in self.callback_logs[-10:]])
         
     async def health_check(self, request):
         """Health check endpoint"""
-        return web.json_response({
-            'status': 'healthy',
-            'timestamp': datetime.now().isoformat(),
-            'uptime': str(datetime.now() - self.bot.start_time)
-        })
+        return web.json_response({'status': 'healthy', 'uptime': str(datetime.now() - self.bot.start_time)})
         
     async def view_logs(self, request):
-        """View all logs"""
-        return web.json_response({
-            'logs': self.callback_logs[-50:]  # Last 50 logs
-        })
+        """View logs"""
+        return web.json_response({'logs': self.callback_logs[-50:]})
         
-    async def view_stats(self, request):
-        """View statistics"""
-        return web.json_response({
-            'bot': self.bot.stats,
-            'uptime': str(datetime.now() - self.bot.start_time),
-            'config': {
-                'interval': Config.CHECK_INTERVAL,
-                'target': Config.TARGET_JOB,
-                'api_version': Config.API_VERSION
-            }
-        })
+    async def test_callback(self, request):
+        """Test callback endpoint"""
+        log = f"[{datetime.now().strftime('%H:%M:%S')}] Test callback received"
+        self.callback_logs.append(log)
         
-    async def campaign_callback(self, request):
-        """Handle campaign finished notifications"""
-        params = dict(request.query)
-        log_entry = f"[{datetime.now().strftime('%H:%M:%S')}] Campaign Finished: {params}"
+        # Send test notification to Telegram
+        await self.bot.send_test_notification()
         
-        # Log it
-        self.callback_logs.append(log_entry)
-        self.bot.stats['callbacks'] += 1
+        return web.Response(text="✅ Callback test successful! Check Telegram.")
         
-        # Save to file
+    async def handle_callback(self, request):
+        """Handle MicroWorkers callbacks"""
+        if request.method == 'POST':
+            try:
+                data = await request.json()
+            except:
+                data = await request.post()
+        else:
+            data = dict(request.query)
+            
+        log = f"[{datetime.now().strftime('%H:%M:%S')}] Callback: {str(data)[:100]}"
+        self.callback_logs.append(log)
+        
+        # Log to file
         try:
             with open('callbacks.log', 'a') as f:
-                f.write(json.dumps({
-                    'time': datetime.now().isoformat(),
-                    'type': 'campaign',
-                    'data': params
-                }) + '\n')
-        except:
-            pass
-            
-        # Send Telegram notification
-        try:
-            msg = (
-                f"🎯 *Campaign Finished*\n\n"
-                f"```\n"
-                f"ID: {params.get('mw_campaign_id', 'N/A')}\n"
-                f"Type: {params.get('mw_campaign_type', 'N/A')}\n"
-                f"Time: {datetime.now().strftime('%H:%M:%S')}\n"
-                f"```"
-            )
-            await self.bot.bot.send_message(
-                chat_id=Config.TELEGRAM_CHAT_ID,
-                text=msg,
-                parse_mode='Markdown'
-            )
-        except:
-            pass
-            
-        return web.Response(text="OK")
-        
-    async def task_callback(self, request):
-        """Handle task submitted notifications"""
-        params = dict(request.query)
-        log_entry = f"[{datetime.now().strftime('%H:%M:%S')}] Task Submitted: {params}"
-        
-        # Log it
-        self.callback_logs.append(log_entry)
-        self.bot.stats['callbacks'] += 1
-        
-        # Save to file
-        try:
-            with open('callbacks.log', 'a') as f:
-                f.write(json.dumps({
-                    'time': datetime.now().isoformat(),
-                    'type': 'task',
-                    'data': params
-                }) + '\n')
+                f.write(json.dumps({'time': datetime.now().isoformat(), 'data': str(data)}) + '\n')
         except:
             pass
             
@@ -499,7 +376,7 @@ class WebServer:
         await self.runner.setup()
         site = web.TCPSite(self.runner, Config.HOST, Config.PORT)
         await site.start()
-        logger.info(f"🌐 Web server running on http://{Config.HOST}:{Config.PORT}")
+        logger.info(f"🌐 Web server running on port {Config.PORT}")
         
     async def stop(self):
         """Stop web server"""
@@ -509,7 +386,7 @@ class WebServer:
 # ==================== TELEGRAM BOT ====================
 
 class MicroWorkersBot:
-    """Main Telegram Bot"""
+    """Main Telegram Bot - FIXED"""
     
     def __init__(self):
         self.token = Config.TELEGRAM_TOKEN
@@ -525,7 +402,6 @@ class MicroWorkersBot:
         self.stats = {
             'checks': 0,
             'notifications': 0,
-            'callbacks': 0,
             'errors': 0
         }
         
@@ -535,9 +411,9 @@ class MicroWorkersBot:
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text="🟢 *Bot Started Successfully!*\n\n"
-                     f"Monitoring: `{Config.TARGET_JOB}`\n"
-                     f"Interval: `{Config.CHECK_INTERVAL}s`\n\n"
-                     f"🌐 Web Interface: https://tg-bot-hmpa.onrender.com",
+                     f"📌 Monitoring: Email Submit + Click + Reply + Screenshot\n"
+                     f"⏱ Interval: {Config.CHECK_INTERVAL}s\n"
+                     f"🌐 Web: https://tg-bot-hmpa.onrender.com",
                 parse_mode='Markdown'
             )
             logger.info("✅ Telegram verified")
@@ -546,11 +422,22 @@ class MicroWorkersBot:
             logger.error(f"❌ Telegram error: {e}")
             return False
             
+    async def send_test_notification(self):
+        """Send test notification"""
+        test_job = {
+            'payment': '0.10',
+            'completed': 113,
+            'total': 400,
+            'remaining': 287,
+            'timestamp': datetime.now().strftime('%d %H:%M')
+        }
+        await self.send_notification(test_job, is_test=True)
+        
     async def start(self):
         """Start the bot"""
-        print("\n" + "="*60)
+        print("\n" + "="*50)
         print("🚀 MicroWorkers ULTIMATE Bot Starting...")
-        print("="*60 + "\n")
+        print("="*50 + "\n")
         
         # Check config
         if not self.token or not self.chat_id:
@@ -565,7 +452,7 @@ class MicroWorkersBot:
         # Start web server
         await self.web.start()
         
-        # Setup Telegram application
+        # Setup Telegram application with correct polling
         self.application = Application.builder().token(self.token).build()
         
         # Add command handlers
@@ -575,21 +462,23 @@ class MicroWorkersBot:
         self.application.add_handler(CommandHandler("test", self.cmd_test))
         self.application.add_handler(CommandHandler("help", self.cmd_help))
         
-        # Start monitoring
+        # Start monitoring in background
         asyncio.create_task(self.monitor_jobs())
         
-        # Start bot
-        await self.application.initialize()
-        await self.application.start()
-        await self.application.updater.start_polling()
-        
-        logger.info("✅ Bot fully operational!")
-        
-        # Keep running
+        # Start bot with proper error handling
         try:
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling()
+            logger.info("✅ Bot fully operational!")
+            
+            # Keep running
             while self.running:
                 await asyncio.sleep(1)
-        except KeyboardInterrupt:
+                
+        except Exception as e:
+            logger.error(f"❌ Bot error: {e}")
+        finally:
             await self.shutdown()
             
     async def shutdown(self):
@@ -618,11 +507,16 @@ class MicroWorkersBot:
                 
                 if jobs:
                     # Find target job
-                    job = self.api.find_target_job()
+                    job = self.api.find_target_job(jobs)
                     
                     if job:
+                        logger.info(f"🎯 Target job found! Sending notification...")
                         await self.send_notification(job)
-                        
+                    else:
+                        logger.debug("No target job found in this batch")
+                else:
+                    logger.warning("No jobs received from API")
+                    
                 await asyncio.sleep(Config.CHECK_INTERVAL)
                 
             except Exception as e:
@@ -630,15 +524,17 @@ class MicroWorkersBot:
                 logger.error(f"❌ Monitor error: {e}")
                 await asyncio.sleep(60)
                 
-    async def send_notification(self, job: Dict):
+    async def send_notification(self, job: Dict, is_test: bool = False):
         """Send job notification"""
         try:
-            # Check cache
-            cache_key = f"{job['completed']}_{job['total']}"
-            if cache_key in self.notification_cache:
-                age = (datetime.now() - self.notification_cache[cache_key]).seconds
-                if age < Config.NOTIFICATION_COOLDOWN:
-                    return
+            # Check cache (skip for test)
+            if not is_test:
+                cache_key = f"{job['completed']}_{job['total']}"
+                if cache_key in self.notification_cache:
+                    age = (datetime.now() - self.notification_cache[cache_key]).seconds
+                    if age < Config.NOTIFICATION_COOLDOWN:
+                        logger.debug(f"⏳ Cooldown: {Config.NOTIFICATION_COOLDOWN - age}s remaining")
+                        return
                     
             # Format message exactly like screenshot
             message = f"""Reply + Screenshot (Read Updated...)
@@ -682,31 +578,22 @@ Open Job    {job['timestamp']}"""
             )
             
             # Update cache and stats
-            self.notification_cache[cache_key] = datetime.now()
-            self.stats['notifications'] += 1
-            
-            logger.info(f"✅ Notification #{self.stats['notifications']} sent | {job['completed']}/{job['total']}")
-            
-            # Clean cache
-            self.clean_cache()
+            if not is_test:
+                self.notification_cache[cache_key] = datetime.now()
+                self.stats['notifications'] += 1
+                logger.info(f"✅ Notification #{self.stats['notifications']} sent")
+            else:
+                logger.info("✅ Test notification sent")
             
         except Exception as e:
             logger.error(f"❌ Send error: {e}")
-            
-    def clean_cache(self):
-        """Clean old cache entries"""
-        now = datetime.now()
-        expired = [k for k, v in self.notification_cache.items() 
-                  if (now - v).seconds > 3600]
-        for k in expired:
-            del self.notification_cache[k]
             
     # ========== COMMAND HANDLERS ==========
     
     async def cmd_start(self, update, context):
         await update.message.reply_text(
             f"🚀 *MicroWorkers Ultimate Bot*\n\n"
-            f"📌 *Monitoring:* `{Config.TARGET_JOB}`\n"
+            f"📌 *Monitoring:* `Email Submit + Click + Reply + Screenshot`\n"
             f"⏱ *Interval:* `{Config.CHECK_INTERVAL}s`\n"
             f"🌐 *Web:* `https://tg-bot-hmpa.onrender.com`\n\n"
             f"*Commands:*\n"
@@ -725,10 +612,9 @@ Open Job    {job['timestamp']}"""
             f"Uptime: {str(uptime).split('.')[0]}\n"
             f"Checks: {self.stats['checks']}\n"
             f"Notifications: {self.stats['notifications']}\n"
-            f"Callbacks: {self.stats['callbacks']}\n"
             f"Errors: {self.stats['errors']}\n"
             f"```\n"
-            f"🌐 {Config.TARGET_JOB}",
+            f"🌐 [Web Interface](https://tg-bot-hmpa.onrender.com)",
             parse_mode='Markdown'
         )
         
@@ -738,7 +624,6 @@ Open Job    {job['timestamp']}"""
             f"*Performance*\n"
             f"├ Checks: {self.stats['checks']}\n"
             f"├ Notifications: {self.stats['notifications']}\n"
-            f"├ Callbacks: {self.stats['callbacks']}\n"
             f"└ Errors: {self.stats['errors']}\n\n"
             f"*Settings*\n"
             f"├ Interval: {Config.CHECK_INTERVAL}s\n"
@@ -748,14 +633,7 @@ Open Job    {job['timestamp']}"""
         )
         
     async def cmd_test(self, update, context):
-        test_job = {
-            'payment': '0.10',
-            'completed': 113,
-            'total': 400,
-            'remaining': 287,
-            'timestamp': datetime.now().strftime('%d %H:%M')
-        }
-        await self.send_notification(test_job)
+        await self.send_test_notification()
         await update.message.reply_text("✅ Test notification sent!")
         
     async def cmd_help(self, update, context):
